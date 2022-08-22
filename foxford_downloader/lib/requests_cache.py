@@ -45,7 +45,7 @@ class CachedHTTPAdapter(HTTPAdapter):
 
 
 class CachedSession():
-    def __new__(self):
+    def __new__(cls):
         s = Session()
         a = CachedHTTPAdapter(max_retries=3)
         s.mount("http://", a)

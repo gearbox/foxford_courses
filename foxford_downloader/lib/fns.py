@@ -79,12 +79,15 @@ def get_user_courses(session: CachedSession) -> Tuple[Dict]:
         if all(False for _ in course_list_response.json()["bookmarks"]):
             return ()
 
-        if not {"name", "subtitle", "resource_id"}.issubset(set(course_list_response.json()["bookmarks"][0])):
-            return {"fatal_error": "Course structure is unknown"}
-
         return (
-            *course_list_response.json()["bookmarks"],
-            *recursive_collection(page_num + 1)
+            (
+                *course_list_response.json()["bookmarks"],
+                *recursive_collection(page_num + 1),
+            )
+            if {"name", "subtitle", "resource_id"}.issubset(
+                set(course_list_response.json()["bookmarks"][0])
+            )
+            else {"fatal_error": "Course structure is unknown"}
         )
 
     return recursive_collection(1)
@@ -92,7 +95,7 @@ def get_user_courses(session: CachedSession) -> Tuple[Dict]:
 
 class get_course_lessons():
     @error_handler
-    def __new__(self, course_id: int, session: CachedSession) -> Iterable[Dict]:
+    def __new__(cls, course_id: int, session: CachedSession) -> Iterable[Dict]:
         lesson_list_at_somewhere_response: CachedResponse = session.get(
             f"https://foxford.ru/api/courses/{course_id}/lessons",
             headers={
@@ -109,27 +112,20 @@ class get_course_lessons():
         if "id" not in lesson_list_at_somewhere_response.json()["lessons"][0]:
             return {"fatal_error": "Lesson structure is unknown"}
 
-        self.course_id = course_id
-        self.session = session
+        cls.course_id = course_id
+        cls.session = session
 
         return pipe(
             lambda json: (
-                *self.recursive_collection(
-                    self,
-                    "before",
-                    json["cursors"]["before"]
+                *cls.recursive_collection(
+                    cls, "before", json["cursors"]["before"]
                 ),
                 *json["lessons"],
-                *self.recursive_collection(
-                    self,
-                    "after",
-                    json["cursors"]["after"]
-                )
+                *cls.recursive_collection(cls, "after", json["cursors"]["after"]),
             ),
             lambda lessons: map(
-                lambda lesson: self.lesson_extension(self, lesson),
-                lessons
-            )
+                lambda lesson: cls.lesson_extension(cls, lesson), lessons
+            ),
         )(lesson_list_at_somewhere_response.json())
 
     @error_handler
@@ -186,18 +182,24 @@ class get_course_lessons():
         if lesson_extension_response.status_code != 200:
             return {"fatal_error": "Lesson extension fetch has failed"}
 
-        if not {"webinar_id", "access_state", "webinar_status", "is_locked"}.issubset(set(lesson_extension_response.json())):
-            return {"fatal_error": "Lesson extension structure is unknown"}
-
-        return lesson_extension_response.json()
+        return (
+            lesson_extension_response.json()
+            if {
+                "webinar_id",
+                "access_state",
+                "webinar_status",
+                "is_locked",
+            }.issubset(set(lesson_extension_response.json()))
+            else {"fatal_error": "Lesson extension structure is unknown"}
+        )
 
 
 class get_resources_for_lessons():
-    def __new__(self, course_id: int, webinar_ids: Iterable[int], session: CachedSession) -> Tuple[Dict]:
-        self.course_id = course_id
-        self.webinar_ids = webinar_ids
-        self.session = session
-        return self.recursive_collection(self)
+    def __new__(cls, course_id: int, webinar_ids: Iterable[int], session: CachedSession) -> Tuple[Dict]:
+        cls.course_id = course_id
+        cls.webinar_ids = webinar_ids
+        cls.session = session
+        return cls.recursive_collection(cls)
 
     @error_handler
     def recursive_collection(self) -> Tuple[Dict]:
@@ -238,10 +240,9 @@ class get_resources_for_lessons():
 
         erly_iframe_src: Union[str, None] = erly_iframe.get("src")
 
-        if not erly_iframe_src:
-            return {"fatal_error": ".full_screen > iframe doesn't have src attribute"}
-
-        return erly_iframe_src
+        return erly_iframe_src or {
+            "fatal_error": ".full_screen > iframe doesn't have src attribute"
+        }
 
     @error_handler
     def construct_resource_links(self, erly_iframe_src: str) -> Dict:
@@ -258,13 +259,14 @@ class get_resources_for_lessons():
             r"^webinar-(\d+)$", search_params.get("conf")
         )
 
-        if not webinar_id_match:
-            return {"fatal_error": "Unable to extract webinar id"}
-
-        return {
-            "video": f"https://storage.netology-group.services/api/v1/buckets/ms.webinar.foxford.ru/sets/{webinar_id_match[1]}/objects/mp4?access_token={search_params.get('access_token')}",
-            "events": f"https://storage.netology-group.services/api/v1/buckets/meta.webinar.foxford.ru/sets/{webinar_id_match[1]}/objects/events.json?access_token={search_params.get('access_token')}"
-        }
+        return (
+            {
+                "video": f"https://storage.netology-group.services/api/v1/buckets/ms.webinar.foxford.ru/sets/{webinar_id_match[1]}/objects/mp4?access_token={search_params.get('access_token')}",
+                "events": f"https://storage.netology-group.services/api/v1/buckets/meta.webinar.foxford.ru/sets/{webinar_id_match[1]}/objects/events.json?access_token={search_params.get('access_token')}",
+            }
+            if webinar_id_match
+            else {"fatal_error": "Unable to extract webinar id"}
+        )
 
 
 def get_lesson_tasks(lesson_ids: Iterable[int], session: CachedSession) -> Iterable[List[Dict]]:
@@ -411,28 +413,23 @@ def download_resources(res_with_path: Dict, session: CachedSession) -> None:
 
         pipe(
             lambda json: filter(
-                lambda obj:
-                    (obj["meta"]["action"] == "add_tab" or
-                     obj["meta"]["action"] == "change_tab") and
-                    obj["meta"]["content_type"] == "pdf",
-                json
+                lambda obj: obj["meta"]["action"] in ["add_tab", "change_tab"]
+                and obj["meta"]["content_type"] == "pdf",
+                json,
             ),
-            lambda pdfs: map(
-                lambda pdf: pdf["meta"]["url"],
-                pdfs
-            ),
+            lambda pdfs: map(lambda pdf: pdf["meta"]["url"], pdfs),
             unique_everseen,
             lambda urls: enumerate(urls, 1),
             lambda enumed_urls: map(
                 lambda item: download_url(
                     item[1],
-                    res_with_path["destination"]
-                    .joinpath(f"{item[0]}.pdf")
+                    res_with_path["destination"].joinpath(f"{item[0]}.pdf"),
                 ),
-                enumed_urls
+                enumed_urls,
             ),
-            lambda task_map: deque(task_map, 0)
+            lambda task_map: deque(task_map, 0),
         )(events_response.json())
+
 
     save_video()
     parse_and_save_event_data()
