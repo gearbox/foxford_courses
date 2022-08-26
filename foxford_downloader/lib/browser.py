@@ -1,5 +1,3 @@
-import asyncio
-
 from async_lru import alru_cache
 from pyppeteer import connect, launch
 
@@ -20,9 +18,9 @@ async def get_browser_connection_url() -> str:
         ]
     )
 
-    connectionUrl = browser.wsEndpoint
+    connection_url = browser.wsEndpoint
     await browser.disconnect()
-    return connectionUrl
+    return connection_url
 
 
 async def terminate_browser_instance() -> None:

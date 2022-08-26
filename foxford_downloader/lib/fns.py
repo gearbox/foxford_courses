@@ -17,7 +17,7 @@ from .requests_cache import CachedResponse, CachedSession
 
 
 @error_handler
-def get_csrf_token(session: CachedSession) -> str:
+def get_csrf_token(session: CachedSession) -> Union[str, dict]:
     csrf_token_get_response: CachedResponse = session.get(
         "https://foxford.ru/api/csrf_token",
         headers={
@@ -35,7 +35,7 @@ def get_csrf_token(session: CachedSession) -> str:
 
 
 @error_handler
-def login(email: str, password: str, session: CachedSession) -> CachedSession:
+def login(email: str, password: str, session: CachedSession) -> Union[CachedSession, dict]:
     if not email or not password:
         return {"fatal_error": "No credentials provided"}
 
@@ -61,79 +61,56 @@ def login(email: str, password: str, session: CachedSession) -> CachedSession:
 
 def get_user_courses(session: CachedSession) -> Tuple[Dict]:
     @error_handler
-    def recursive_collection(page_num: int) -> Tuple[Dict]:
+    def recursive_collection(page_num: int) -> Union[Tuple[Dict, ...], dict]:
         course_list_response: CachedResponse = session.get(
             f"https://foxford.ru/api/user/bookmarks?page={page_num}&archived=false",
-            headers={
-                "X-CSRF-Token": get_csrf_token(session),
-                "X-Requested-With": "XMLHttpRequest"
-            }
+            headers={"X-CSRF-Token": get_csrf_token(session), "X-Requested-With": "XMLHttpRequest"}
         )
 
         if course_list_response.status_code != 200:
             return {"fatal_error": "Course list fetch has failed"}
-
         if "bookmarks" not in course_list_response.json():
             return {"fatal_error": "Course list structure is unknown"}
-
         if all(False for _ in course_list_response.json()["bookmarks"]):
             return ()
-
-        if not {"name", "subtitle", "resource_id"}.issubset(set(course_list_response.json()["bookmarks"][0])):
-            return {"fatal_error": "Course structure is unknown"}
-
         return (
             *course_list_response.json()["bookmarks"],
             *recursive_collection(page_num + 1)
-        )
+        ) if {"name", "subtitle", "resource_id"}.issubset(set(course_list_response.json()["bookmarks"][0])) \
+            else {"fatal_error": "Course structure is unknown"}
 
     return recursive_collection(1)
 
 
 class get_course_lessons():
     @error_handler
-    def __new__(self, course_id: int, session: CachedSession) -> Iterable[Dict]:
+    def __new__(cls, course_id: int, session: CachedSession) -> Iterable[Dict]:
         lesson_list_at_somewhere_response: CachedResponse = session.get(
             f"https://foxford.ru/api/courses/{course_id}/lessons",
-            headers={
-                "X-Requested-With": "XMLHttpRequest"
-            }
+            headers={"X-Requested-With": "XMLHttpRequest"}
         )
 
         if lesson_list_at_somewhere_response.status_code != 200:
             return {"fatal_error": "Lesson list fetch has failed"}
-
         if not {"lessons", "cursors"}.issubset(set(lesson_list_at_somewhere_response.json())):
             return {"fatal_error": "Lesson list structure is unknown"}
-
         if "id" not in lesson_list_at_somewhere_response.json()["lessons"][0]:
             return {"fatal_error": "Lesson structure is unknown"}
-
-        self.course_id = course_id
-        self.session = session
-
+        cls.course_id = course_id
+        cls.session = session
         return pipe(
             lambda json: (
-                *self.recursive_collection(
-                    self,
-                    "before",
-                    json["cursors"]["before"]
-                ),
+                *cls.recursive_collection(cls, "before", json["cursors"]["before"]),
                 *json["lessons"],
-                *self.recursive_collection(
-                    self,
-                    "after",
-                    json["cursors"]["after"]
-                )
+                *cls.recursive_collection(cls, "after", json["cursors"]["after"])
             ),
             lambda lessons: map(
-                lambda lesson: self.lesson_extension(self, lesson),
-                lessons
+                lambda lesson: cls.lesson_extension(cls, lesson), lessons
             )
         )(lesson_list_at_somewhere_response.json())
 
     @error_handler
-    def recursive_collection(self, direction: str, cursor: Union[int, None]) -> Tuple[Dict]:
+    def recursive_collection(self, direction: str, cursor: Union[int, None]) -> Tuple[Dict, ...]:
         if not cursor:
             return ()
 
@@ -178,29 +155,25 @@ class get_course_lessons():
     def lesson_extension(self, lesson: Dict) -> Dict:
         lesson_extension_response: CachedResponse = self.session.get(
             f"https://foxford.ru/api/courses/{self.course_id}/lessons/{lesson['id']}",
-            headers={
-                "X-Requested-With": "XMLHttpRequest"
-            }
+            headers={"X-Requested-With": "XMLHttpRequest"}
         )
 
         if lesson_extension_response.status_code != 200:
             return {"fatal_error": "Lesson extension fetch has failed"}
-
-        if not {"webinar_id", "access_state", "webinar_status", "is_locked"}.issubset(set(lesson_extension_response.json())):
-            return {"fatal_error": "Lesson extension structure is unknown"}
-
-        return lesson_extension_response.json()
+        return lesson_extension_response.json() \
+            if {"webinar_id", "access_state", "webinar_status", "is_locked"}.issubset(set(lesson_extension_response.json())) \
+            else {"fatal_error": "Lesson extension structure is unknown"}
 
 
 class get_resources_for_lessons():
-    def __new__(self, course_id: int, webinar_ids: Iterable[int], session: CachedSession) -> Tuple[Dict]:
-        self.course_id = course_id
-        self.webinar_ids = webinar_ids
-        self.session = session
-        return self.recursive_collection(self)
+    def __new__(cls, course_id: int, webinar_ids: Iterable[int], session: CachedSession) -> Tuple[Dict]:
+        cls.course_id = course_id
+        cls.webinar_ids = webinar_ids
+        cls.session = session
+        return cls.recursive_collection(cls)
 
     @error_handler
-    def recursive_collection(self) -> Tuple[Dict]:
+    def recursive_collection(self) -> Tuple[Dict, ...]:
         webinar_id: Union[int, None] = next(self.webinar_ids, None)
 
         if not webinar_id:
@@ -224,47 +197,27 @@ class get_resources_for_lessons():
     @error_handler
     def retrieve_erly_iframe_src(self, video_source_response: CachedResponse) -> str:
         erly_iframe: Union[Tag, None] = pipe(
-            lambda r_content: BeautifulSoup(
-                r_content,
-                "html.parser"
-            ),
-            lambda soup: soup.select_one(
-                "div.full_screen > iframe"
-            )
+            lambda r_content: BeautifulSoup(r_content, "html.parser"),
+            lambda soup: soup.select_one("div.full_screen > iframe")
         )(video_source_response.content)
 
         if not erly_iframe:
             return {"fatal_error": ".full_screen > iframe wasn't found"}
-
         erly_iframe_src: Union[str, None] = erly_iframe.get("src")
-
-        if not erly_iframe_src:
-            return {"fatal_error": ".full_screen > iframe doesn't have src attribute"}
-
-        return erly_iframe_src
+        return erly_iframe_src or {"fatal_error": ".full_screen > iframe doesn't have src attribute"}
 
     @error_handler
     def construct_resource_links(self, erly_iframe_src: str) -> Dict:
-        search_params: Dict = dict(
-            parse.parse_qsl(
-                parse.urlparse(erly_iframe_src).query
-            )
-        )
+        search_params: Dict = dict(parse.parse_qsl(parse.urlparse(erly_iframe_src).query))
 
         if not {"conf", "access_token"}.issubset(set(search_params)):
             return {"fatal_error": "Iframe src search params structure is unknown"}
-
-        webinar_id_match: Union[Match, None] = match(
-            r"^webinar-(\d+)$", search_params.get("conf")
-        )
-
-        if not webinar_id_match:
-            return {"fatal_error": "Unable to extract webinar id"}
+        webinar_id_match: Union[Match, None] = match("^webinar-(\d+)$", search_params.get("conf"))
 
         return {
             "video": f"https://storage.netology-group.services/api/v1/buckets/ms.webinar.foxford.ru/sets/{webinar_id_match[1]}/objects/mp4?access_token={search_params.get('access_token')}",
             "events": f"https://storage.netology-group.services/api/v1/buckets/meta.webinar.foxford.ru/sets/{webinar_id_match[1]}/objects/events.json?access_token={search_params.get('access_token')}"
-        }
+        } if webinar_id_match else {"fatal_error": "Unable to extract webinar id"}
 
 
 def get_lesson_tasks(lesson_ids: Iterable[int], session: CachedSession) -> Iterable[List[Dict]]:
@@ -361,74 +314,45 @@ def download_resources(res_with_path: Dict, session: CachedSession) -> None:
         with requests.get(url, stream=True) as r:
             if r.status_code != 200:
                 return {"fatal_error": "Video fetch has failed"}
-
             with dest.open("wb") as f:
-                deque(
-                    map(
-                        lambda chunk: f.write(chunk),
-                        filter(None, r.iter_content(10 * 1024))
-                    ),
-                    0
-                )
+                deque(map(lambda chunk: f.write(chunk), filter(None, r.iter_content(10 * 1024))), 0)
 
     def save_video() -> None:
         if res_with_path["destination"].joinpath("video.mp4").exists():
             return
-
-        download_url(
-            res_with_path["video"],
-            res_with_path["destination"].joinpath("video.mp4")
-        )
+        download_url(res_with_path["video"], res_with_path["destination"].joinpath("video.mp4"))
 
     @error_handler
     def parse_and_save_event_data() -> None:
         if res_with_path["destination"].joinpath("message_log.txt").exists():
             return
-
-        events_response: CachedResponse = session.get(
-            res_with_path["events"]
-        )
-
+        events_response: CachedResponse = session.get(res_with_path["events"])
         if events_response.status_code != 200:
             return {"fatal_error": "Events fetch has failed"}
-
         if "meta" not in events_response.json()[0]:
             return {"fatal_error": "Events structure is unknown"}
-
         with res_with_path["destination"].joinpath("message_log.txt").open("w", errors="replace") as f:
             pipe(
-                lambda json: filter(
-                    lambda obj: obj["meta"]["action"] == "message",
-                    json
-                ),
+                lambda json: filter(lambda obj: obj["meta"]["action"] == "message", json),
                 lambda messages: map(
-                    lambda msg: f"[{datetime.fromtimestamp(msg['meta']['time'])}] {msg['meta']['user_name']}: {parse.unquote(msg['meta']['body'])}",
+                    lambda msg:
+                    f"[{datetime.fromtimestamp(msg['meta']['time'])}] {msg['meta']['user_name']}: {parse.unquote(msg['meta']['body'])}",
                     messages
                 ),
-                lambda message_log: "\n".join(message_log),
-                f.write
+                lambda message_log: "\n".join(message_log), f.write
             )(events_response.json())
 
         pipe(
             lambda json: filter(
-                lambda obj:
-                    (obj["meta"]["action"] == "add_tab" or
-                     obj["meta"]["action"] == "change_tab") and
-                    obj["meta"]["content_type"] == "pdf",
-                json
+                lambda obj: obj["meta"]["action"] in ["add_tab", "change_tab"] and obj["meta"]["content_type"] == "pdf", json
             ),
             lambda pdfs: map(
-                lambda pdf: pdf["meta"]["url"],
-                pdfs
+                lambda pdf: pdf["meta"]["url"], pdfs
             ),
             unique_everseen,
             lambda urls: enumerate(urls, 1),
             lambda enumed_urls: map(
-                lambda item: download_url(
-                    item[1],
-                    res_with_path["destination"]
-                    .joinpath(f"{item[0]}.pdf")
-                ),
+                lambda item: download_url(item[1], res_with_path["destination"].joinpath(f"{item[0]}.pdf")),
                 enumed_urls
             ),
             lambda task_map: deque(task_map, 0)
@@ -436,9 +360,7 @@ def download_resources(res_with_path: Dict, session: CachedSession) -> None:
 
     save_video()
     parse_and_save_event_data()
-    print(
-        f"-> {res_with_path['destination'].name}: \033[92m\u2713\033[0m"
-    )
+    print(f"-> {res_with_path['destination'].name}: \033[92m\u2713\033[0m")
 
 
 async def save_page(url: str, path: Path, folder: str, cookies: Iterable[Dict], semaphore: asyncio.Semaphore) -> None:

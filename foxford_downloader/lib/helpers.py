@@ -1,9 +1,9 @@
 from functools import reduce
 from traceback import format_exc
-from typing import Any, Callable, Dict, Tuple, Union
+from typing import Any, Callable, Dict, Tuple
 
 
-class Logger():
+class Logger:
     @staticmethod
     def error(message: str) -> None:
         print(f"[\033[91mE\033[0m]: \033[1m{message}\033[0m")
@@ -30,8 +30,9 @@ def error_handler(fn: Callable) -> Callable:
                 exit(1)
 
             return result
-        except Exception:
+        except Exception as e:
             Logger.error(format_exc())
+            Logger.error(f'Exception: {e}')
             exit(1)
 
     return wrapper

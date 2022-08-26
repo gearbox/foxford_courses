@@ -2,7 +2,7 @@ from functools import lru_cache
 
 from requests import Response, Session
 from requests.adapters import HTTPAdapter
-from requests.cookies import cookiejar_from_dict, extract_cookies_to_jar
+from requests.cookies import extract_cookies_to_jar
 from requests.structures import CaseInsensitiveDict
 from requests.utils import get_encoding_from_headers
 
@@ -44,8 +44,8 @@ class CachedHTTPAdapter(HTTPAdapter):
         return response
 
 
-class CachedSession():
-    def __new__(self):
+class CachedSession:
+    def __new__(cls):
         s = Session()
         a = CachedHTTPAdapter(max_retries=3)
         s.mount("http://", a)
